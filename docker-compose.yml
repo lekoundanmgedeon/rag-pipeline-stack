@@ -1,0 +1,106 @@
+version: '3.9'
+
+# ═══════════════════════════════════════════════════════════════
+# Docker Compose — RAG Ingestion Stack
+# Services : PostgreSQL + pgvector, Redis, Ollama (local LLM)
+# ═══════════════════════════════════════════════════════════════
+
+services:
+
+  # ── PostgreSQL + pgvector ─────────────────────────────────────
+  db:
+    image: pgvector/pgvector:pg16
+    container_name: rag-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB:       ragdb
+      POSTGRES_USER:     raguser
+      POSTGRES_PASSWORD: ragpassword
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    command: >
+      postgres
+        -c shared_buffers=512MB
+        -c work_mem=64MB
+        -c maintenance_work_mem=256MB
+        -c effective_cache_size=1GB
+        -c max_parallel_workers_per_gather=2
+        -c wal_level=replica
+        -c max_wal_size=2GB
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U raguser -d ragdb"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Redis ─────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: rag-redis
+    restart: unless-stopped
+    command: >
+      redis-server
+        --maxmemory 512mb
+        --maxmemory-policy allkeys-lru
+        --save 60 1
+    ports:
+      - "6379:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  # ── Ollama (LLM local) ────────────────────────────────────────
+  # Note : pour GPU NVIDIA, ajouter `deploy.resources.reservations`
+  ollama:
+    image: ollama/ollama:latest
+    container_name: rag-ollama
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollamadata:/root/.ollama
+    # ── Décommenter pour GPU NVIDIA ──
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:11434/api/tags || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  # ── API (optionnel, à décommenter en production) ──────────────
+  # api:
+  #   build: .
+  #   container_name: rag-api
+  #   restart: unless-stopped
+  #   ports:
+  #     - "3000:3000"
+  #   environment:
+  #     DATABASE_URL: postgresql://raguser:ragpassword@db:5432/ragdb
+  #     REDIS_URL:    redis://redis:6379
+  #     OLLAMA_BASE_URL: http://ollama:11434
+  #   depends_on:
+  #     db:     { condition: service_healthy }
+  #     redis:  { condition: service_healthy }
+  #     ollama: { condition: service_healthy }
+
+volumes:
+  pgdata:
+  redisdata:
+  ollamadata:
+
+networks:
+  default:
+    name: rag-network
